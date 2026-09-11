@@ -1,0 +1,48 @@
+@use '../styles/variables' as *;
+
+.hint {
+  position: relative;
+  display: inline-flex;
+}
+
+.hint__button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  padding: 0;
+  border: 1px solid $color-border;
+  border-radius: 999px;
+  background: $color-surface;
+  color: $color-text-muted;
+
+  &:hover,
+  &:focus-visible {
+    color: $color-text;
+    border-color: #d1d5db;
+  }
+
+  svg {
+    width: 0.75rem;
+    height: 0.75rem;
+  }
+}
+
+.hint__popup {
+  position: fixed;
+  z-index: 20;
+  padding: $spacing-2 $spacing-3;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  background: $color-background;
+  color: $color-text;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: break-word;
+  box-shadow: 0 10px 24px rgb(15 23 42 / 10%);
+  pointer-events: none;
+}
