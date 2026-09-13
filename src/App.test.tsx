@@ -17,8 +17,11 @@ describe('routes', () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt')).toBeInTheDocument();
     expect(screen.getByLabelText('Max tokens')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quality threshold')).toBeInTheDocument();
     expect(screen.getByLabelText('Compare models')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
+    expect(screen.getByText(/Context 0%/)).toBeInTheDocument();
     expect(screen.getByText('Request payload')).toBeInTheDocument();
   });
 

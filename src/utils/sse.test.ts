@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSseData } from './sse';
+import { parseCompareSseData, parseSseData } from './sse';
 
 describe('parseSseData', () => {
   it('returns done for the terminal marker', () => {
@@ -48,6 +48,32 @@ describe('parseSseData', () => {
     expect(parseSseData('not-json')).toBeNull();
     expect(
       parseSseData(JSON.stringify({ choices: [{ delta: {} }] })),
+    ).toBeNull();
+  });
+});
+
+describe('parseCompareSseData', () => {
+  it('tags a delta with a side', () => {
+    expect(
+      parseCompareSseData(
+        JSON.stringify({ side: 'left', type: 'delta', text: 'Hi' }),
+      ),
+    ).toEqual({ side: 'left', type: 'delta', text: 'Hi' });
+  });
+
+  it('returns done for the terminal marker', () => {
+    expect(parseCompareSseData('[DONE]')).toBe('done');
+  });
+
+  it('reads a per-side close', () => {
+    expect(
+      parseCompareSseData(JSON.stringify({ side: 'right', type: 'closed' })),
+    ).toEqual({ side: 'right', type: 'closed' });
+  });
+
+  it('ignores payloads without a side', () => {
+    expect(
+      parseCompareSseData(JSON.stringify({ type: 'delta', text: 'Hi' })),
     ).toBeNull();
   });
 });

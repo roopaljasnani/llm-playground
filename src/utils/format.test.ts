@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { formatCount, formatMaxTokens, formatMs, formatOutput } from './format';
+import {
+  formatContextUsage,
+  formatCount,
+  formatMaxTokens,
+  formatMs,
+  formatOutput,
+  formatScore,
+} from './format';
 
 describe('formatMs', () => {
   it('shows an em dash when empty', () => {
@@ -28,6 +35,19 @@ describe('formatMaxTokens', () => {
 
   it('shows a positive cap', () => {
     expect(formatMaxTokens(256)).toBe('256');
+  });
+});
+
+describe('formatContextUsage', () => {
+  it('shows percent and token counts', () => {
+    expect(formatContextUsage(12, 1240, 131072)).toBe('12% · 1240 / 131072');
+  });
+});
+
+describe('formatScore', () => {
+  it('shows two decimal places', () => {
+    expect(formatScore(0.7)).toBe('0.70');
+    expect(formatScore(0.4)).toBe('0.40');
   });
 });
 

@@ -1,14 +1,45 @@
-import { useId, useState, type SubmitEvent, type KeyboardEvent } from 'react';
+import {
+  useId,
+  useRef,
+  useState,
+  type SubmitEvent,
+  type KeyboardEvent,
+} from 'react';
+import { ContextMeter } from '../components/ContextMeter';
 import { ConversationThread } from '../components/ConversationThread';
 import { FieldHint } from '../components/FieldHint';
 import { PayloadPreview } from '../components/PayloadPreview';
 import { ResponsePane } from '../components/ResponsePane';
 import { RunHistory } from '../components/RunHistory';
 import { useChatCompletion } from '../hooks/useChatCompletion';
-import type { ChatMessage, ChatRequest, RunRecord } from '../types/chat';
-import { formatMaxTokens } from '../utils/format';
+import { useCompareCompletion } from '../hooks/useCompareCompletion';
+import { completeChat } from '../lib/llm';
+import type {
+  ChatMessage,
+  ChatRequest,
+  CompletionResult,
+  RunRecord,
+} from '../types/chat';
+import { MAX_TEMPERATURE } from '../utils/chatRequest';
+import {
+  applyConversationSummary,
+  buildSummaryRequest,
+  contextUsage,
+  estimatePromptTokens,
+  splitThreadForSummary,
+} from '../utils/context';
+import { formatMaxTokens, formatScore } from '../utils/format';
 import { buildProviderPayload } from '../utils/messages';
-import { MODELS, modelLabel } from '../utils/models';
+import { MODELS, modelContextWindow, modelLabel } from '../utils/models';
+import {
+  DEFAULT_QUALITY_THRESHOLD,
+  buildQualityJudgeRequest,
+  emptyQuality,
+  parseQualityScores,
+  shouldRegenerate,
+  type QualityScores,
+  type QualityView,
+} from '../utils/quality';
 import {
   createRunRecord,
   prependRun,
@@ -29,6 +60,19 @@ const Playground: React.FC = () => {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [openHint, setOpenHint] = useState<string | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [qualityThreshold, setQualityThreshold] = useState(
+    DEFAULT_QUALITY_THRESHOLD,
+  );
+  const [leftQuality, setLeftQuality] = useState<QualityView>(() =>
+    emptyQuality(DEFAULT_QUALITY_THRESHOLD),
+  );
+  const [rightQuality, setRightQuality] = useState<QualityView>(() =>
+    emptyQuality(DEFAULT_QUALITY_THRESHOLD),
+  );
+  const summarizeAbortRef = useRef<AbortController | null>(null);
+  const gateAbortRef = useRef<AbortController | null>(null);
 
   const systemPromptId = useId();
   const promptId = useId();
@@ -38,20 +82,58 @@ const Playground: React.FC = () => {
   const maxTokensId = useId();
   const jsonModeId = useId();
   const compareModeId = useId();
+  const qualityThresholdId = useId();
 
   const primary = useChatCompletion();
-  const secondary = useChatCompletion();
+  const compare = useCompareCompletion();
   const hint = {
     openName: openHint,
     onOpenChange: setOpenHint,
   };
 
-  const running =
-    primary.status === 'running' || secondary.status === 'running';
+  const running = compareMode
+    ? compare.left.status === 'running' || compare.right.status === 'running'
+    : primary.status === 'running';
+  const scoring =
+    leftQuality.phase === 'scoring' ||
+    leftQuality.phase === 'regenerating' ||
+    rightQuality.phase === 'scoring' ||
+    rightQuality.phase === 'regenerating';
+  const busy = running || summarizing || scoring;
   const canRun =
     prompt.trim().length > 0 &&
-    !running &&
+    !busy &&
     (!compareMode || compareModel !== model);
+
+  const stopAll = () => {
+    primary.stop();
+    compare.stop();
+    summarizeAbortRef.current?.abort();
+    gateAbortRef.current?.abort();
+  };
+
+  const beginGate = () => {
+    gateAbortRef.current?.abort();
+    const controller = new AbortController();
+    gateAbortRef.current = controller;
+    return controller;
+  };
+
+  const scoreReply = async (
+    request: ChatRequest,
+    reply: string,
+    signal: AbortSignal,
+  ): Promise<QualityScores> => {
+    const raw = await completeChat(
+      buildQualityJudgeRequest(request, reply),
+      signal,
+    );
+    const parsed = parseQualityScores(raw);
+    if (typeof parsed === 'string') {
+      throw new Error(parsed);
+    }
+    return parsed;
+  };
 
   const buildRequest = (modelIdValue: string): ChatRequest => ({
     prompt: prompt.trim(),
@@ -63,10 +145,7 @@ const Playground: React.FC = () => {
     ...(maxTokens > 0 ? { maxTokens } : {}),
   });
 
-  const record = (
-    request: ChatRequest,
-    result: Awaited<ReturnType<typeof primary.run>>,
-  ) => {
+  const record = (request: ChatRequest, result: CompletionResult) => {
     if (!shouldRecordRun(result)) {
       return;
     }
@@ -79,6 +158,177 @@ const Playground: React.FC = () => {
     );
   };
 
+  const commitThread = (request: ChatRequest, result: CompletionResult) => {
+    if (result.text && !result.error) {
+      setThread((current) => [
+        ...current,
+        { role: 'user', content: request.prompt },
+        { role: 'assistant', content: result.text },
+      ]);
+      setPrompt('');
+    }
+  };
+
+  const scoreOne = async (
+    setQuality: (quality: QualityView) => void,
+    request: ChatRequest,
+    result: CompletionResult,
+    signal: AbortSignal,
+  ) => {
+    if (!result.text || result.error || result.aborted) {
+      return;
+    }
+
+    setQuality({
+      scores: null,
+      threshold: qualityThreshold,
+      phase: 'scoring',
+      retries: 0,
+      error: null,
+    });
+
+    try {
+      const scores = await scoreReply(request, result.text, signal);
+      if (signal.aborted) {
+        return;
+      }
+      setQuality({
+        scores,
+        threshold: qualityThreshold,
+        phase: 'ready',
+        retries: 0,
+        error: null,
+      });
+    } catch (caught) {
+      if (signal.aborted) {
+        return;
+      }
+      setQuality({
+        scores: null,
+        threshold: qualityThreshold,
+        phase: 'error',
+        retries: 0,
+        error:
+          caught instanceof Error
+            ? caught.message
+            : 'Could not score this reply.',
+      });
+    }
+  };
+
+  const runSingle = async (request: ChatRequest, signal: AbortSignal) => {
+    let result = await primary.run(request);
+    if (signal.aborted || result.aborted || !result.text || result.error) {
+      record(request, result);
+      return;
+    }
+
+    setLeftQuality({
+      scores: null,
+      threshold: qualityThreshold,
+      phase: 'scoring',
+      retries: 0,
+      error: null,
+    });
+
+    let scores: QualityScores;
+    let retries = 0;
+
+    try {
+      scores = await scoreReply(request, result.text, signal);
+    } catch (caught) {
+      if (signal.aborted) {
+        record(request, result);
+        commitThread(request, result);
+        return;
+      }
+      setLeftQuality({
+        scores: null,
+        threshold: qualityThreshold,
+        phase: 'error',
+        retries: 0,
+        error:
+          caught instanceof Error
+            ? caught.message
+            : 'Could not score this reply.',
+      });
+      record(request, result);
+      commitThread(request, result);
+      return;
+    }
+
+    if (signal.aborted) {
+      record(request, result);
+      commitThread(request, result);
+      return;
+    }
+
+    if (shouldRegenerate(scores, qualityThreshold, retries)) {
+      retries = 1;
+      setLeftQuality({
+        scores,
+        threshold: qualityThreshold,
+        phase: 'regenerating',
+        retries,
+        error: null,
+      });
+      const retry = await primary.run(request);
+      if (signal.aborted || retry.aborted) {
+        record(request, result);
+        commitThread(request, result);
+        return;
+      }
+      if (retry.text && !retry.error) {
+        result = retry;
+        setLeftQuality({
+          scores,
+          threshold: qualityThreshold,
+          phase: 'scoring',
+          retries,
+          error: null,
+        });
+        try {
+          scores = await scoreReply(request, result.text, signal);
+        } catch (caught) {
+          if (signal.aborted) {
+            record(request, result);
+            commitThread(request, result);
+            return;
+          }
+          setLeftQuality({
+            scores,
+            threshold: qualityThreshold,
+            phase: 'error',
+            retries,
+            error:
+              caught instanceof Error
+                ? caught.message
+                : 'Could not score this reply.',
+          });
+          record(request, result);
+          commitThread(request, result);
+          return;
+        }
+      }
+    }
+
+    if (signal.aborted) {
+      record(request, result);
+      commitThread(request, result);
+      return;
+    }
+
+    setLeftQuality({
+      scores,
+      threshold: qualityThreshold,
+      phase: 'ready',
+      retries,
+      error: null,
+    });
+    record(request, result);
+    commitThread(request, result);
+  };
+
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
     if (!canRun) {
@@ -86,29 +336,27 @@ const Playground: React.FC = () => {
     }
 
     const leftRequest = buildRequest(model);
+    const gate = beginGate();
+    setLeftQuality(emptyQuality(qualityThreshold));
+    setRightQuality(emptyQuality(qualityThreshold));
 
     if (!compareMode) {
-      void primary.run(leftRequest).then((result) => {
-        record(leftRequest, result);
-        if (result.text && !result.error) {
-          setThread((current) => [
-            ...current,
-            { role: 'user', content: leftRequest.prompt },
-            { role: 'assistant', content: result.text },
-          ]);
-          setPrompt('');
-        }
-      });
+      void runSingle(leftRequest, gate.signal);
       return;
     }
 
     const rightRequest = buildRequest(compareModel);
-    void Promise.all([
-      primary.run(leftRequest),
-      secondary.run(rightRequest),
-    ]).then(([left, right]) => {
+    void compare.run(leftRequest, rightRequest).then(async ([left, right]) => {
       record(leftRequest, left);
       record(rightRequest, right);
+      if (gate.signal.aborted) {
+        return;
+      }
+
+      await Promise.all([
+        scoreOne(setLeftQuality, leftRequest, left, gate.signal),
+        scoreOne(setRightQuality, rightRequest, right, gate.signal),
+      ]);
     });
   };
 
@@ -123,14 +371,67 @@ const Playground: React.FC = () => {
     setPrompt(run.prompt);
     setSystemPrompt(run.systemPrompt);
     setModel(run.model);
-    setTemperature(run.temperature);
+    setTemperature(Math.min(run.temperature, MAX_TEMPERATURE));
     setJsonMode(run.jsonMode);
     setMaxTokens(run.maxTokens ?? 0);
   };
 
-  const leftPayload = buildProviderPayload(buildRequest(model));
+  const leftRequest = buildRequest(model);
+  const rightRequest = buildRequest(compareModel);
+  const leftContext = contextUsage(
+    estimatePromptTokens(leftRequest),
+    modelContextWindow(model),
+  );
+  const rightContext = contextUsage(
+    estimatePromptTokens(rightRequest),
+    modelContextWindow(compareModel),
+  );
+  const formContext =
+    compareMode && rightContext.percent > leftContext.percent
+      ? rightContext
+      : leftContext;
+  const canSummarize =
+    thread.length > 0 && !busy && (formContext.warning || formContext.exceeded);
+
+  const summarizeThread = () => {
+    const { older, recent } = splitThreadForSummary(thread);
+    if (older.length === 0) {
+      return;
+    }
+
+    summarizeAbortRef.current?.abort();
+    const controller = new AbortController();
+    summarizeAbortRef.current = controller;
+    setSummarizing(true);
+    setSummaryError(null);
+
+    void completeChat(buildSummaryRequest(older, model), controller.signal)
+      .then((summary) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setThread(applyConversationSummary(summary, recent));
+      })
+      .catch((caught: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSummaryError(
+          caught instanceof Error
+            ? caught.message
+            : 'Could not summarize the chat.',
+        );
+      })
+      .finally(() => {
+        if (summarizeAbortRef.current === controller) {
+          setSummarizing(false);
+        }
+      });
+  };
+
+  const leftPayload = buildProviderPayload(leftRequest);
   const rightPayload = compareMode
-    ? buildProviderPayload(buildRequest(compareModel))
+    ? buildProviderPayload(rightRequest)
     : undefined;
 
   return (
@@ -283,8 +584,8 @@ const Playground: React.FC = () => {
                       label="temperature"
                       {...hint}
                     >
-                      How random the reply can be. 0 is more predictable. Higher
-                      is more varied. 0.7 is a common default.
+                      How random the reply can be. 0 is more predictable. 1 is
+                      the maximum. 0.7 is a common default.
                     </FieldHint>
                   </span>
                   <span className="field__value">{temperature.toFixed(1)}</span>
@@ -294,7 +595,7 @@ const Playground: React.FC = () => {
                   name="temperature"
                   type="range"
                   min={0}
-                  max={2}
+                  max={MAX_TEMPERATURE}
                   step={0.1}
                   value={temperature}
                   onChange={(event) =>
@@ -311,7 +612,8 @@ const Playground: React.FC = () => {
                 <span className="field__title">
                   <label htmlFor={temperatureId}>Temperature</label>
                   <FieldHint name="temperature" label="temperature" {...hint}>
-                    How random the reply can be. Applied to both models.
+                    How random the reply can be. Applied to both models. 1 is
+                    the maximum.
                   </FieldHint>
                 </span>
                 <span className="field__value">{temperature.toFixed(1)}</span>
@@ -321,7 +623,7 @@ const Playground: React.FC = () => {
                 name="temperature"
                 type="range"
                 min={0}
-                max={2}
+                max={MAX_TEMPERATURE}
                 step={0.1}
                 value={temperature}
                 onChange={(event) => setTemperature(Number(event.target.value))}
@@ -352,6 +654,39 @@ const Playground: React.FC = () => {
             />
           </div>
 
+          <div className="field">
+            <span className="field__label">
+              <span className="field__title">
+                <label htmlFor={qualityThresholdId}>Quality threshold</label>
+                <FieldHint
+                  name="quality-threshold"
+                  label="quality threshold"
+                  {...hint}
+                >
+                  After a reply, a judge scores relevance, coherence, and
+                  helpfulness from 0 to 1. In single-model mode, a score below
+                  this value regenerates once. Compare still scores both sides
+                  but does not retry.
+                </FieldHint>
+              </span>
+              <span className="field__value">
+                {formatScore(qualityThreshold)}
+              </span>
+            </span>
+            <input
+              id={qualityThresholdId}
+              name="qualityThreshold"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={qualityThreshold}
+              onChange={(event) =>
+                setQualityThreshold(Number(event.target.value))
+              }
+            />
+          </div>
+
           <div className="check">
             <input
               id={jsonModeId}
@@ -367,22 +702,17 @@ const Playground: React.FC = () => {
           </div>
 
           <div className="playground__actions">
-            {running ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => {
-                  primary.stop();
-                  secondary.stop();
-                }}
-              >
-                Stop
-              </button>
-            ) : (
-              <button type="submit" className="button" disabled={!canRun}>
-                {compareMode ? 'Compare' : 'Run'}
-              </button>
-            )}
+            <button type="submit" className="button" disabled={!canRun}>
+              {compareMode ? 'Compare' : 'Run'}
+            </button>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={stopAll}
+              disabled={!busy}
+            >
+              Stop
+            </button>
             <p className="playground__hint">⌘↵ or Ctrl+Enter</p>
           </div>
 
@@ -394,36 +724,77 @@ const Playground: React.FC = () => {
         </form>
 
         <section className="playground__response" aria-live="polite">
+          {compareMode ? (
+            <div className="context-meter-stack">
+              <ContextMeter
+                usage={leftContext}
+                label={modelLabel(model)}
+                onSummarize={summarizeThread}
+                canSummarize={canSummarize}
+                summarizing={summarizing}
+              />
+              <ContextMeter
+                usage={rightContext}
+                label={modelLabel(compareModel)}
+                onSummarize={summarizeThread}
+                canSummarize={canSummarize}
+                summarizing={summarizing}
+              />
+            </div>
+          ) : (
+            <ContextMeter
+              usage={formContext}
+              onSummarize={summarizeThread}
+              canSummarize={canSummarize}
+              summarizing={summarizing}
+            />
+          )}
+          {formContext.exceeded ? (
+            <p className="error" role="alert">
+              This prompt is over the model context window. Summarize earlier
+              turns or shorten the chat before running.
+            </p>
+          ) : null}
+          {summaryError ? (
+            <p className="error" role="alert">
+              {summaryError}
+            </p>
+          ) : null}
+
           <ConversationThread messages={thread} />
 
           {compareMode ? (
             <div className="playground__compare">
               <ResponsePane
                 title={modelLabel(model)}
-                status={primary.status}
-                error={primary.error}
-                text={primary.text}
+                status={compare.left.status}
+                error={compare.left.error}
+                text={compare.left.text}
                 jsonMode={jsonMode}
+                quality={leftQuality}
+                onStop={stopAll}
               />
               <ResponsePane
                 title={modelLabel(compareModel)}
-                status={secondary.status}
-                error={secondary.error}
-                text={secondary.text}
+                status={compare.right.status}
+                error={compare.right.error}
+                text={compare.right.text}
                 jsonMode={jsonMode}
+                quality={rightQuality}
+                onStop={stopAll}
               />
             </div>
-          ) : primary.status === 'running' ||
-            primary.error ||
-            thread.length === 0 ? (
+          ) : (
             <ResponsePane
               title="Response"
               status={primary.status}
               error={primary.error}
               text={primary.text}
               jsonMode={jsonMode}
+              quality={leftQuality}
+              onStop={stopAll}
             />
-          ) : null}
+          )}
 
           <PayloadPreview payload={leftPayload} comparePayload={rightPayload} />
 

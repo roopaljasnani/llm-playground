@@ -3,6 +3,7 @@ export type ChatRole = 'system' | 'user' | 'assistant';
 export type ChatMessage = {
   role: ChatRole;
   content: string;
+  kind?: 'summary';
 };
 
 export type ChatRequest = {
@@ -25,6 +26,11 @@ export type ChatChunk =
   | { type: 'delta'; text: string }
   | { type: 'usage'; usage: TokenUsage }
   | { type: 'error'; message: string };
+
+export type CompareSide = 'left' | 'right';
+
+export type CompareChunk =
+  (ChatChunk & { side: CompareSide }) | { side: CompareSide; type: 'closed' };
 
 export type CompletionStatus = 'idle' | 'running' | 'error';
 

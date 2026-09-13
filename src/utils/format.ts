@@ -10,6 +10,18 @@ export function formatMaxTokens(value: number): string {
   return value === 0 ? 'No limit' : String(value);
 }
 
+export function formatContextUsage(
+  percent: number,
+  tokens: number,
+  limit: number,
+): string {
+  return `${percent}% · ${tokens} / ${limit}`;
+}
+
+export function formatScore(value: number): string {
+  return value.toFixed(2);
+}
+
 export function formatOutput(text: string, jsonMode: boolean): string {
   if (!jsonMode) {
     return text;

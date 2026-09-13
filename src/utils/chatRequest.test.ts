@@ -54,6 +54,18 @@ describe('parseChatRequest', () => {
     ).toBe('Message roles must be user or assistant.');
   });
 
+  it('rejects a temperature above 1', () => {
+    expect(
+      parseChatRequest(JSON.stringify({ ...valid, temperature: 1.1 })),
+    ).toBe('Temperature must be a number between 0 and 1.');
+  });
+
+  it('accepts a temperature of 1', () => {
+    expect(
+      parseChatRequest(JSON.stringify({ ...valid, temperature: 1 })),
+    ).toEqual({ ...valid, temperature: 1 });
+  });
+
   it('rejects a bad maxTokens value', () => {
     expect(parseChatRequest(JSON.stringify({ ...valid, maxTokens: 0 }))).toBe(
       'maxTokens must be an integer between 1 and 8192.',

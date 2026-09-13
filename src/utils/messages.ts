@@ -21,7 +21,12 @@ export function buildChatMessages(
   }
 
   if (request.messages?.length) {
-    messages.push(...request.messages);
+    for (const message of request.messages) {
+      messages.push({
+        role: message.kind === 'summary' ? 'user' : message.role,
+        content: message.content,
+      });
+    }
   }
 
   const prompt = request.prompt.trim();

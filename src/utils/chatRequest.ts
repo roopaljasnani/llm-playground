@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatRequest } from '../types/chat.ts';
 
 export const MAX_TOKENS_LIMIT = 8192;
+export const MAX_TEMPERATURE = 1;
 
 function parseHistory(value: unknown): ChatMessage[] | string {
   if (value === undefined) {
@@ -68,8 +69,12 @@ export function parseChatRequest(raw: string): ChatRequest | string {
   if (!model) {
     return 'Model is required.';
   }
-  if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
-    return 'Temperature must be a number between 0 and 2.';
+  if (
+    !Number.isFinite(temperature) ||
+    temperature < 0 ||
+    temperature > MAX_TEMPERATURE
+  ) {
+    return `Temperature must be a number between 0 and ${MAX_TEMPERATURE}.`;
   }
 
   let maxTokens: number | undefined;

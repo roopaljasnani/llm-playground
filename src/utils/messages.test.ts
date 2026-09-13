@@ -60,6 +60,29 @@ describe('buildChatMessages', () => {
       { role: 'user', content: 'And 3+3?' },
     ]);
   });
+
+  it('sends a summary as a user message without the kind field', () => {
+    expect(
+      buildChatMessages({
+        ...base,
+        prompt: 'What next?',
+        messages: [
+          {
+            role: 'assistant',
+            kind: 'summary',
+            content:
+              'Summary of earlier conversation:\n\nThey added two numbers.',
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        role: 'user',
+        content: 'Summary of earlier conversation:\n\nThey added two numbers.',
+      },
+      { role: 'user', content: 'What next?' },
+    ]);
+  });
 });
 
 describe('buildProviderPayload', () => {

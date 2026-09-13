@@ -27,7 +27,7 @@
   gap: $spacing-6;
 
   @media (min-width: 880px) {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(18rem, 0.72fr) minmax(0, 1.28fr);
     align-items: start;
   }
 }
@@ -41,6 +41,18 @@
   background: $color-background;
   border: 1px solid $color-border;
   border-radius: $radius-lg;
+}
+
+.playground__response {
+  min-width: 0;
+
+  @media (min-width: 880px) {
+    position: sticky;
+    top: $spacing-4;
+    max-height: calc(100dvh - 7.5rem);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 .field {
@@ -114,10 +126,67 @@
 .playground__compare {
   display: grid;
   gap: $spacing-4;
+  min-width: 0;
 
   @media (min-width: 640px) {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
+}
+
+.response-pane {
+  min-width: 0;
+}
+
+.context-meter-stack {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-2;
+}
+
+.context-meter {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $spacing-3;
+  padding: $spacing-2 $spacing-3;
+  background: $color-surface;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+
+  p {
+    margin: 0;
+    color: $color-text-muted;
+  }
+}
+
+.context-meter--warn {
+  background: $color-warning-bg;
+  border-color: $color-warning;
+
+  p {
+    color: $color-warning;
+  }
+}
+
+.context-meter--exceeded {
+  background: $color-danger-bg;
+  border-color: $color-danger;
+
+  p {
+    color: $color-danger;
+  }
+}
+
+.quality-meter {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: $spacing-1;
+}
+
+.quality-meter__metrics {
+  font-weight: 500;
 }
 
 .text-button {
@@ -129,8 +198,13 @@
   font-size: 0.8125rem;
   font-weight: 600;
 
-  &:hover {
+  &:hover:not(:disabled) {
     color: $color-primary-hover;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
   }
 }
 
@@ -222,7 +296,7 @@
 
 .playground__response-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: $spacing-3;
 
@@ -232,10 +306,25 @@
   }
 }
 
+.playground__response-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-3;
+
+  .button {
+    padding: $spacing-1 $spacing-3;
+    font-size: 0.8125rem;
+  }
+}
+
 .status {
   color: $color-primary;
   font-size: 0.8125rem;
   font-weight: 600;
+}
+
+.thread__item--summary .thread__role {
+  color: $color-primary;
 }
 
 .playground__empty {

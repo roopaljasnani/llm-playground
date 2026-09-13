@@ -25,6 +25,7 @@
     "server/**/*.ts",
     "src/utils/messages.ts",
     "src/utils/chatRequest.ts",
+    "src/utils/sse.ts",
     "src/types/chat.ts"
   ]
 }
